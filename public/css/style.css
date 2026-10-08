@@ -1,0 +1,212 @@
+/* Formal Student Management System Stylesheet */
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  --sms-primary: #1e3a8a;       /* Deep Navy */
+  --sms-primary-dark: #0f172a;  /* Midnight Slate */
+  --sms-secondary: #2563eb;     /* Royal Blue */
+  --sms-accent: #0284c7;        /* Formal Sky/Cyan */
+  --sms-success: #059669;       /* Emerald */
+  --sms-warning: #d97706;       /* Amber */
+  --sms-danger: #dc2626;        /* Crimson */
+  --sms-bg: #f8fafc;            /* Clean Academic Off-white */
+  --sms-card: #ffffff;
+  --sms-border: #e2e8f0;
+}
+
+body {
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--sms-bg);
+  color: #1e293b;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+/* Formal Academic Badge & Headers */
+.sms-gradient-header {
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 60%, #1d4ed8 100%);
+}
+
+.sms-card-shadow {
+  box-shadow: 0 4px 6px -1px rgba(15, 23, 42, 0.05), 0 2px 4px -2px rgba(15, 23, 42, 0.05), 0 0 0 1px rgba(226, 232, 240, 0.8);
+}
+
+.sms-card-shadow-hover {
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.sms-card-shadow-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 20px -5px rgba(15, 23, 42, 0.09), 0 4px 6px -2px rgba(15, 23, 42, 0.04), 0 0 0 1px rgba(148, 163, 184, 0.3);
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Sidebar Responsive Styles */
+@media (min-width: 1024px) {
+  #sms-sidebar {
+    transform: translateX(0) !important;
+    position: sticky !important;
+    top: 0;
+    height: 100vh;
+    display: flex !important;
+  }
+}
+
+@media (max-width: 1023px) {
+  #sms-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 280px;
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.25);
+  }
+  #sms-sidebar.sidebar-open {
+    transform: translateX(0);
+  }
+}
+
+/* Backdrop */
+.sidebar-backdrop {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease-in-out;
+}
+.sidebar-backdrop.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Swipe Indicator Prompt (briefly hints on touch devices) */
+.gesture-indicator {
+  position: fixed;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 48px;
+  background: linear-gradient(to bottom, #2563eb, #1e3a8a);
+  border-radius: 0 4px 4px 0;
+  z-index: 40;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* Formal ID Card Container */
+.student-id-card {
+  background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.12), 0 8px 10px -6px rgba(15, 23, 42, 0.04);
+  position: relative;
+  overflow: hidden;
+}
+
+.student-id-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 8px;
+  background: linear-gradient(90deg, #1e3a8a 0%, #2563eb 50%, #0284c7 100%);
+}
+
+.barcode-strip {
+  background: repeating-linear-gradient(
+    90deg,
+    #0f172a 0px,
+    #0f172a 2px,
+    transparent 2px,
+    transparent 4px,
+    #0f172a 4px,
+    #0f172a 5px,
+    transparent 5px,
+    transparent 7px,
+    #0f172a 7px,
+    #0f172a 10px,
+    transparent 10px,
+    transparent 11px
+  );
+  height: 34px;
+  width: 100%;
+}
+
+/* Print Optimization */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #printable-area, #printable-area * {
+    visibility: visible;
+  }
+  #printable-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 20px;
+    box-shadow: none !important;
+    border: 1px solid #94a3b8 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+
+/* Formal Modal Animation */
+.modal-overlay {
+  transition: opacity 0.25s ease-out;
+}
+.modal-dialog {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease-out;
+}
+
+/* Tab Lock Styling */
+.tab-locked {
+  opacity: 0.55;
+  cursor: not-allowed !important;
+  position: relative;
+}
+.tab-locked:hover {
+  background-color: transparent !important;
+}
+
+/* Formal Table Styles */
+.formal-table th {
+  background-color: #f1f5f9;
+  color: #334155;
+  font-weight: 600;
+  font-size: 0.775rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 10px 14px;
+  border-bottom: 2px solid #cbd5e1;
+}
+.formal-table td {
+  padding: 10px 14px;
+  font-size: 0.875rem;
+  border-bottom: 1px solid #e2e8f0;
+}
+.formal-table tr:hover td {
+  background-color: #f8fafc;
+}
