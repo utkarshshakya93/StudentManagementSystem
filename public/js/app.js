@@ -14,17 +14,18 @@ import {
   validateAndUpdateAuthSession
 } from './auth.js';
 import { 
-  fetchAllStudents, 
-  saveStudentRecord, 
-  deleteStudentRecord, 
+  fetchAllUsers, 
+  saveUserRecord, 
+  deleteUserRecord, 
   fetchAllTasks, 
   addDailyTaskRecord, 
   updateDailyTaskRecord, 
   deleteDailyTaskRecord, 
-  getLocalStudents, 
+  getLocalUsers, 
   getLocalTasks, 
-  saveUserProfile, 
-  getLocalUserProfile 
+  getLocalUserProfile,
+  saveLocalUserProfile,
+  updateUserSaltedPassword
 } from './db.js';
 import { 
   appState, 
@@ -79,7 +80,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initSwipeGestures();
 
   // Load initial datasets from Firestore / Cache
-  await fetchAllStudents();
+  await fetchAllUsers();
   await fetchAllTasks();
 
   // Check active session validity on load
@@ -529,8 +530,8 @@ async function handleSignOut() {
 function setupProfileTabHandlers() {
   // Populate form from table click
   window.populateStudentForm = (studentId) => {
-    const students = getLocalStudents();
-    const match = students.find(s => s.studentId === studentId);
+    const users = getLocalUsers();
+    const match = users.find(s => s.studentId === studentId);
     if (match) {
       document.getElementById('prof-student-id').value = match.studentId || '';
       document.getElementById('prof-student-name').value = match.name || '';
@@ -555,9 +556,9 @@ function setupProfileTabHandlers() {
         showToast("Student ID and Student Name are required.", "warning");
         return;
       }
-      await saveStudentRecord(studentData);
+      await saveUserRecord(studentData.studentId, studentData);
       renderMyProfileTab();
-      showToast(`Student ${studentData.name} (ID: ${studentData.studentId}) saved successfully.`, "success");
+      showToast(`Student ${studentData.name} (ID: ${studentData.studentId}) saved in users registry.`, "success");
     });
   }
 
@@ -570,7 +571,7 @@ function setupProfileTabHandlers() {
         showToast("Please enter or select a Student ID to update.", "warning");
         return;
       }
-      await saveStudentRecord(studentData);
+      await saveUserRecord(studentData.studentId, studentData);
       renderMyProfileTab();
       showToast(`Record for ${studentData.name} updated.`, "success");
     });
@@ -592,9 +593,9 @@ function setupProfileTabHandlers() {
 
   window.confirmDeleteStudent = async (studentId) => {
     if (confirm(`Are you sure you want to delete student record ID ${studentId} from academic registry?`)) {
-      await deleteStudentRecord(studentId);
+      await deleteUserRecord(studentId);
       renderMyProfileTab();
-      showToast(`Student record ${studentId} deleted.`, "info");
+      showToast(`Student record ${studentId} removed from registry.`, "info");
     }
   };
 
@@ -604,12 +605,12 @@ function setupProfileTabHandlers() {
   if (btnSearchName && inputSearchName) {
     btnSearchName.addEventListener('click', () => {
       appState.studentSearchQuery = inputSearchName.value.trim();
-      renderStudentsTable(getLocalStudents());
+      renderStudentsTable(getLocalUsers());
     });
     inputSearchName.addEventListener('keyup', (e) => {
       if (e.key === 'Enter') {
         appState.studentSearchQuery = inputSearchName.value.trim();
-        renderStudentsTable(getLocalStudents());
+        renderStudentsTable(getLocalUsers());
       }
     });
   }
@@ -620,7 +621,7 @@ function setupProfileTabHandlers() {
     btnShowAll.addEventListener('click', () => {
       appState.studentSearchQuery = '';
       if (inputSearchName) inputSearchName.value = '';
-      renderStudentsTable(getLocalStudents());
+      renderStudentsTable(getLocalUsers());
       showToast("Displaying all student records.", "info", 1500);
     });
   }
@@ -635,9 +636,9 @@ function setupProfileTabHandlers() {
 }
 
 function getFormDataFromProfile() {
-  const currentStudents = getLocalStudents();
+  const currentUsers = getLocalUsers();
   const enteredId = document.getElementById('prof-student-id').value.trim();
-  const existing = currentStudents.find(s => s.studentId === enteredId);
+  const existing = currentUsers.find(s => s.studentId === enteredId);
 
   return {
     studentId: enteredId,
@@ -649,7 +650,6 @@ function getFormDataFromProfile() {
     email: document.getElementById('prof-email').value.trim(),
     section: document.getElementById('prof-section').value,
     address: document.getElementById('prof-address').value.trim(),
-    password: (existing && existing.password) || (enteredId === '145493' ? 'Vishal90' : 'Password123'),
     college: (existing && existing.college) || "Institute of Engineering & Technology",
     course: (existing && existing.course) || "B.Tech Computer Science & Engineering",
     semester: (existing && existing.semester) || "Semester 6",
@@ -674,8 +674,17 @@ function setupAccountSettingHandlers() {
         return;
       }
 
+      if (newPass && newPass.length < 6) {
+        showToast("New password must be at least 6 characters.", "warning");
+        return;
+      }
+
       const existingProfile = appState.userProfile || {};
+      const docId = (appState.currentUser && appState.currentUser.uid) || existingProfile.docId || document.getElementById('acc-student-id').value.trim();
+
       const updatedProfile = {
+        ...existingProfile,
+        docId,
         studentId: document.getElementById('acc-student-id').value.trim(),
         name: document.getElementById('acc-name').value.trim(),
         college: document.getElementById('acc-college').value.trim(),
@@ -690,19 +699,24 @@ function setupAccountSettingHandlers() {
         dob: document.getElementById('acc-dob').value,
         gender: document.getElementById('acc-gender').value,
         address: document.getElementById('acc-address').value.trim(),
-        password: newPass || existingProfile.password || (document.getElementById('acc-student-id').value.trim() === '145493' ? 'Vishal90' : 'Password123'),
         profileCompleted: true
       };
 
-      const uid = (appState.currentUser && appState.currentUser.uid) || updatedProfile.studentId;
-      const saved = await saveUserProfile(uid, updatedProfile);
+      // Save user profile without plain text password
+      const saved = await saveUserRecord(docId, updatedProfile);
       appState.userProfile = saved;
+
+      // If new password provided, hash with salt and update
+      if (newPass) {
+        await updateUserSaltedPassword(docId, newPass);
+        showToast("Password updated and encrypted with salt in Firestore!", "info");
+      }
 
       // Unlock tabs
       updateSidebarLockStatus();
       updateUserInterfaceSummary(appState.currentUser || {}, saved);
       renderAccountSettingTab();
-      showToast("Profile credentials & password saved in Firestore! All portal tabs unlocked.", "success");
+      showToast("Profile credentials saved to Firestore! All portal tabs unlocked.", "success");
     });
   }
 }

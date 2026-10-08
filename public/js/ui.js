@@ -1,14 +1,14 @@
 // User Interface Handlers, Routing, Modals, Gestures & Tab Rendering
 import { 
-  getLocalStudents, 
-  saveStudentRecord, 
-  deleteStudentRecord, 
+  getLocalUsers, 
+  saveUserRecord, 
+  deleteUserRecord, 
   getLocalTasks, 
   addDailyTaskRecord, 
   updateDailyTaskRecord, 
   deleteDailyTaskRecord,
   getLocalUserProfile,
-  saveUserProfile
+  saveLocalUserProfile
 } from './db.js';
 import { isProfileComplete } from './auth.js';
 
@@ -255,25 +255,12 @@ export function updateSidebarLockStatus() {
 // ---------------- TAB 1: MY PROFILE (Direct Tribute to Reference Image 2) ---------------- //
 
 export function renderMyProfileTab() {
-  const students = getLocalStudents();
+  const users = getLocalUsers();
   const profile = appState.userProfile || {};
   const currentId = profile.studentId || "145493";
 
   // Match or use primary record
-  let currentStudent = students.find(s => s.studentId === currentId) || students[0] || {
-    studentId: "145493",
-    name: "Utkarsh Shakya",
-    fatherName: "Brajesh Kumar",
-    dob: "2004-07-10",
-    gender: "Male",
-    contact: "9876543210",
-    section: "A",
-    email: "utkarshshakya61@gmail.com",
-    address: "Kampil (Farrukhabad), UP",
-    college: "Institute of Engineering & Technology",
-    course: "B.Tech Computer Science & Engineering",
-    semester: "Semester 6"
-  };
+  let currentStudent = users.find(s => s.studentId === currentId) || users[0] || profile;
 
   // Populate active form fields
   document.getElementById('prof-student-id').value = currentStudent.studentId || '';

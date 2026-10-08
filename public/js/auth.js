@@ -1,4 +1,4 @@
-// Authentication Logic: Email/Password, Student ID, Phone OTP, Google Auth, Auth Session
+// Authentication Logic with Salted Cryptography & Unified Single 'users' Collection
 import { 
   auth, 
   createUserWithEmailAndPassword, 
@@ -13,15 +13,16 @@ import {
   signInWithPhoneNumber 
 } from './firebase-init.js';
 import { 
-  saveUserProfile, 
-  fetchUserProfile, 
+  saveUserRecord, 
+  lookupUserByStudentIdOrEmail, 
+  updateUserSaltedPassword, 
   getLocalUserProfile, 
-  getLocalStudents, 
-  saveStudentRecord, 
-  lookupStudentCredential,
-  updateStudentPassword,
   saveLocalUserProfile 
 } from './db.js';
+import { 
+  secureSaltPassword, 
+  verifyPasswordCredentials 
+} from './crypto.js';
 
 let phoneConfirmationResult = null;
 let recaptchaVerifierInstance = null;
@@ -29,12 +30,12 @@ let recaptchaVerifierInstance = null;
 const AUTH_SESSION_KEY = 'sms_auth_session';
 
 // ---------------- AUTH SESSION MANAGEMENT (7 Days vs 3 Days) ---------------- //
-// Requirement: "Create Auth Session as well for 7 days validatity if active per day else 3 day validity if visit is less or there a gap."
 
 export function createAuthSession(userRecord) {
   const now = Date.now();
   const todayStr = new Date().toISOString().split('T')[0];
   const session = {
+    docId: userRecord.docId || userRecord.uid || userRecord.studentId,
     studentId: userRecord.studentId || '',
     email: userRecord.email || '',
     name: userRecord.name || 'Student',
@@ -42,7 +43,7 @@ export function createAuthSession(userRecord) {
     lastActiveTimestamp: now,
     lastActiveDate: todayStr,
     daysVisited: [todayStr],
-    // Initial 7 days baseline granted if visited daily
+    // 7 days rolling validity with daily activity
     expiresAt: now + (7 * 24 * 60 * 60 * 1000),
     hasActivityGap: false
   };
@@ -58,7 +59,6 @@ export function validateAndUpdateAuthSession() {
     const session = JSON.parse(raw);
     const now = Date.now();
 
-    // 1. Check if session has exceeded absolute expiration
     if (now > session.expiresAt) {
       console.warn("Auth session has expired.");
       clearAuthSession();
@@ -73,24 +73,21 @@ export function validateAndUpdateAuthSession() {
       session.daysVisited = [todayStr];
     }
 
-    // 2. Daily Activity check: Active per day (gap <= 24 hours)
     if (diffHours <= 24) {
-      // Active per day: Maintain 7-day validity rolling extension
+      // Daily active: extend 7-day rolling window
       if (!session.daysVisited.includes(todayStr)) {
         session.daysVisited.push(todayStr);
       }
       session.expiresAt = now + (7 * 24 * 60 * 60 * 1000);
       session.hasActivityGap = false;
     } else {
-      // 3. Gap detected (inactivity > 24 hours):
-      // "else 3 day validity if visit is less or there a gap"
+      // Inactivity gap detected: cap remaining validity to 3 days
       const gapLimit = lastActive + (3 * 24 * 60 * 60 * 1000);
       if (now > gapLimit) {
         console.warn("Auth session expired due to inactivity gap exceeding 3 days.");
         clearAuthSession();
         return null;
       }
-      // Cap validity to 3 days from this visit
       session.expiresAt = Math.min(session.expiresAt, now + (3 * 24 * 60 * 60 * 1000));
       session.hasActivityGap = true;
     }
@@ -132,7 +129,6 @@ export function isProfileComplete(profile) {
   if (!profile) return false;
   if (profile.profileCompleted === true) return true;
   
-  // Mandatory fields for student portal access
   const hasId = Boolean(profile.studentId && profile.studentId.trim());
   const hasName = Boolean(profile.name && profile.name.trim());
   const hasCollege = Boolean(profile.college && profile.college.trim());
@@ -161,8 +157,7 @@ export function initPhoneRecaptcha(buttonId = 'btn-send-phone-otp') {
   }
 }
 
-// ---------------- 1. SIGN IN WITH EMAIL / STUDENT ID + PASSWORD ---------------- //
-// Completely resolves 400 error by validating against Firestore stored passwords first
+// ---------------- 1. SIGN IN WITH STUDENT ID / EMAIL + PASSWORD ---------------- //
 export async function loginWithEmailOrStudentId(identifier, password) {
   const cleanId = (identifier || '').trim();
   const cleanPass = (password || '').trim();
@@ -171,62 +166,76 @@ export async function loginWithEmailOrStudentId(identifier, password) {
     throw new Error("Please enter both Student ID / Email and Password.");
   }
 
-  // 1. Look up student in Firestore (users & students collections) and LocalStorage
-  const studentRecord = await lookupStudentCredential(cleanId);
+  // 1. Look up user record in Firestore 'users' collection or local cache
+  const userRecord = await lookupUserByStudentIdOrEmail(cleanId);
 
-  if (studentRecord) {
-    // Student record exists! Check password
-    if (studentRecord.password && studentRecord.password.trim() === cleanPass) {
-      // Password matches (e.g. Student 145493 with Vishal90)
+  if (userRecord) {
+    // Verify password using salted hash / cipher decoding
+    const isMatch = await verifyPasswordCredentials(
+      cleanPass, 
+      userRecord.salt, 
+      userRecord.passwordHash, 
+      userRecord.passwordCipher, 
+      userRecord.iv
+    );
+
+    // Fallback check for plain string in case of legacy record
+    const isLegacyPlain = userRecord.password && userRecord.password === cleanPass;
+
+    if (isMatch || isLegacyPlain) {
+      // Successful authentication!
       const userObj = {
-        uid: studentRecord.uid || studentRecord.studentId,
-        displayName: studentRecord.name,
-        email: studentRecord.email,
-        studentId: studentRecord.studentId
+        uid: userRecord.docId || userRecord.uid || userRecord.studentId,
+        displayName: userRecord.name,
+        email: userRecord.email,
+        studentId: userRecord.studentId
       };
 
-      // Set profile as complete for email/password users
-      studentRecord.profileCompleted = true;
-      studentRecord.authProvider = "password";
+      userRecord.profileCompleted = true;
+      userRecord.authProvider = "password";
 
-      // Save user profile to local storage & Firestore
-      await saveUserProfile(userObj.uid, studentRecord);
+      saveLocalUserProfile(userRecord);
+      createAuthSession(userRecord);
 
-      // Create 7-day Auth Session
-      createAuthSession(studentRecord);
-
-      // Attempt background Firebase Auth login or creation if possible (quietly catching errors)
-      try {
-        await signInWithEmailAndPassword(auth, studentRecord.email, cleanPass);
-      } catch (authErr) {
+      // Attempt background Firebase Auth login or creation without blocking
+      if (userRecord.email) {
         try {
-          // If not in Firebase Auth, attempt creation
-          await createUserWithEmailAndPassword(auth, studentRecord.email, cleanPass);
-        } catch (createErr) {
-          // It's completely fine if Firebase Auth rejects it; Firestore credentials already verified!
+          await signInWithEmailAndPassword(auth, userRecord.email, cleanPass);
+        } catch (authErr) {
+          try {
+            await createUserWithEmailAndPassword(auth, userRecord.email, cleanPass);
+          } catch (createErr) {}
         }
       }
 
-      return { user: userObj, profile: studentRecord };
-    } else if (studentRecord.password && studentRecord.password.trim() !== cleanPass) {
-      throw new Error("Incorrect password entered for this Student record. Please verify and try again.");
+      return { user: userObj, profile: userRecord };
+    } else {
+      throw new Error("Incorrect password entered for this student. Please verify credentials.");
     }
   }
 
-  // 2. If record was not in local/Firestore, attempt standard Firebase Auth
+  // 2. If not found in users collection, try standard Firebase Auth
   try {
     const cred = await signInWithEmailAndPassword(auth, cleanId, cleanPass);
-    const profile = await fetchUserProfile(cred.user.uid);
-    createAuthSession(profile || { studentId: cleanId, email: cred.user.email });
+    const profile = await lookupUserByStudentIdOrEmail(cred.user.email) || {
+      docId: cred.user.uid,
+      uid: cred.user.uid,
+      name: cred.user.displayName || "Student",
+      email: cred.user.email,
+      studentId: cleanId.includes('@') ? '' : cleanId,
+      profileCompleted: true,
+      authProvider: "password"
+    };
+    saveLocalUserProfile(profile);
+    createAuthSession(profile);
     return { user: cred.user, profile };
   } catch (fbErr) {
-    // If Firebase Auth throws 400 or user-not-found
-    throw new Error(`Authentication failed: Invalid Student ID / Email or Password.`);
+    throw new Error("Authentication failed: Invalid Student ID / Email or Password.");
   }
 }
 
 // ---------------- 2. SIGN UP WITH COMPLETE FORM ---------------- //
-// Auto Complete Profile on Sign Up, when user fills the form
+// Creates EXACTLY ONE document in 'users' collection with salted password
 export async function registerStudentWithEmailPassword(formData) {
   const {
     studentId,
@@ -245,18 +254,22 @@ export async function registerStudentWithEmailPassword(formData) {
   const cleanId = studentId.trim();
   const cleanPass = password.trim();
 
-  // Try creating in Firebase Auth
-  let uid = "student_" + cleanId;
+  // Generate salted cryptographic hash & AES-GCM cipher
+  const cryptoData = await secureSaltPassword(cleanPass);
+
+  // Try creating Firebase Auth account
+  let uid = cleanId;
   try {
     const userCredential = await createUserWithEmailAndPassword(auth, cleanEmail, cleanPass);
     uid = userCredential.user.uid;
     await updateProfile(userCredential.user, { displayName: name.trim() });
   } catch (fbErr) {
-    console.warn("Firebase Auth creation notice (proceeding with Firestore registration):", fbErr.message);
+    console.warn("Firebase Auth creation notice (proceeding with single users document):", fbErr.message);
   }
 
-  // Build complete institutional profile with password stored in Firestore
+  // Build complete student profile - NO plain password is stored
   const profileData = {
+    docId: uid,
     uid,
     studentId: cleanId,
     name: name.trim(),
@@ -266,37 +279,27 @@ export async function registerStudentWithEmailPassword(formData) {
     section: formData.section || "A",
     email: cleanEmail,
     contact: contact.trim(),
-    password: cleanPass, // Stored in Firestore as requested
+    fatherName: formData.fatherName || "—",
+    dob: formData.dob || "",
+    gender: formData.gender || "Not Specified",
+    address: formData.address || "",
     faqQuestion: faqQuestion.trim(),
     faqAnswer: faqAnswer.trim().toLowerCase(),
+    // Salt and cryptographic hashes (never plain text!)
+    salt: cryptoData.salt,
+    passwordHash: cryptoData.passwordHash,
+    passwordCipher: cryptoData.passwordCipher,
+    iv: cryptoData.iv,
     profileCompleted: true, // Auto Completed Profile on Sign Up
     authProvider: "password",
+    status: "Active",
     createdAt: new Date().toISOString()
   };
 
-  // Save to Firestore users and students collection
-  await saveUserProfile(uid, profileData);
-  await saveStudentRecord({
-    studentId: cleanId,
-    name: profileData.name,
-    college: profileData.college,
-    course: profileData.course,
-    section: profileData.section,
-    semester: profileData.semester,
-    email: profileData.email,
-    contact: profileData.contact,
-    password: cleanPass,
-    gender: formData.gender || "Not Specified",
-    fatherName: formData.fatherName || "—",
-    dob: formData.dob || "",
-    address: formData.address || "",
-    faqQuestion: profileData.faqQuestion,
-    faqAnswer: profileData.faqAnswer,
-    profileCompleted: true,
-    status: "Active"
-  });
+  // Save to EXACTLY ONE document in Firestore 'users' collection
+  await saveUserRecord(uid, profileData);
 
-  // Create 7-day Auth Session
+  // Start 7-day rolling Auth Session
   createAuthSession(profileData);
 
   const userObj = {
@@ -310,17 +313,18 @@ export async function registerStudentWithEmailPassword(formData) {
 }
 
 // ---------------- 3. SIGN IN / UP WITH GOOGLE ---------------- //
-// Tabs Unlock ONLY for Google / other methods AFTER profile completion in Account Setting
+// Exactly ONE document created in 'users' with Google UID
 export async function signInWithGoogle() {
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: 'select_account' });
   const result = await signInWithPopup(auth, provider);
   const user = result.user;
 
-  let profile = await fetchUserProfile(user.uid);
+  let profile = await lookupUserByStudentIdOrEmail(user.email) || await lookupUserByStudentIdOrEmail(user.uid);
   if (!profile) {
-    // New Google student: profile is incomplete, locking other tabs
+    // Initial profile for Google user: incomplete, locking other tabs until Account Setting is filled
     profile = {
+      docId: user.uid,
       uid: user.uid,
       name: user.displayName || "Student",
       email: user.email,
@@ -332,12 +336,11 @@ export async function signInWithGoogle() {
       contact: "",
       faqQuestion: "",
       faqAnswer: "",
-      password: "",
-      profileCompleted: false, // Locked until completed in account setting
+      profileCompleted: false, // Locked until completed
       authProvider: "google",
       createdAt: new Date().toISOString()
     };
-    await saveUserProfile(user.uid, profile);
+    await saveUserRecord(user.uid, profile);
   } else {
     profile.profileCompleted = isProfileComplete(profile);
     saveLocalUserProfile(profile);
@@ -363,9 +366,11 @@ export async function confirmPhoneVerificationCode(otp) {
   }
   const result = await phoneConfirmationResult.confirm(otp);
   const user = result.user;
-  let profile = await fetchUserProfile(user.uid);
+
+  let profile = await lookupUserByStudentIdOrEmail(user.phoneNumber) || await lookupUserByStudentIdOrEmail(user.uid);
   if (!profile) {
     profile = {
+      docId: user.uid,
       uid: user.uid,
       name: "Student",
       email: "",
@@ -376,19 +381,18 @@ export async function confirmPhoneVerificationCode(otp) {
       semester: "",
       faqQuestion: "",
       faqAnswer: "",
-      password: "",
       profileCompleted: false,
       authProvider: "phone",
       createdAt: new Date().toISOString()
     };
-    await saveUserProfile(user.uid, profile);
+    await saveUserRecord(user.uid, profile);
   }
 
   createAuthSession(profile);
   return { user, profile };
 }
 
-// ---------------- 5. FORGOT PASSWORD (With Direct New Password Update) ---------------- //
+// ---------------- 5. FORGOT PASSWORD (With Salted Encryption & Single Document Update) ---------------- //
 export async function resetPasswordViaEmail(email) {
   await sendPasswordResetEmail(auth, email.trim());
 }
@@ -406,28 +410,26 @@ export async function resetPasswordViaStudentFaq(studentId, faqAnswer, newPasswo
     throw new Error("New password must be at least 6 characters long.");
   }
 
-  // Look up student in Firestore & local cache
-  const student = await lookupStudentCredential(cleanId);
-  if (!student) {
+  const user = await lookupUserByStudentIdOrEmail(cleanId);
+  if (!user) {
     throw new Error(`Student ID "${cleanId}" not found in institutional records.`);
   }
 
-  const storedAns = (student.faqAnswer || '').toLowerCase().trim();
+  const storedAns = (user.faqAnswer || '').toLowerCase().trim();
   if (storedAns && storedAns !== cleanAns) {
     throw new Error("Security verification answer did not match student institutional records.");
   }
 
-  // Update password in Firestore (users & students) and local storage
-  await updateStudentPassword(student.studentId, cleanNewPass);
+  // Update salted password in single 'users' document
+  await updateUserSaltedPassword(user.docId || user.studentId, cleanNewPass);
 
-  // If user has email in Firebase Auth, also attempt reset email as fallback
-  if (student.email) {
+  if (user.email) {
     try {
-      await sendPasswordResetEmail(auth, student.email);
+      await sendPasswordResetEmail(auth, user.email);
     } catch (e) {}
   }
 
-  return student;
+  return user;
 }
 
 // ---------------- 6. SIGN OUT ---------------- //
@@ -440,18 +442,16 @@ export async function logoutStudent() {
 
 // ---------------- 7. AUTH STATE & SESSION LISTENER ---------------- //
 export function subscribeToAuthState(callback) {
-  // Check active session first
   const activeSession = validateAndUpdateAuthSession();
 
   return onAuthStateChanged(auth, async (user) => {
     if (user) {
-      const profile = await fetchUserProfile(user.uid);
+      const profile = await lookupUserByStudentIdOrEmail(user.uid) || await lookupUserByStudentIdOrEmail(user.email);
       callback(user, profile);
     } else if (activeSession) {
-      // Local session is active!
-      const profile = getLocalUserProfile() || await lookupStudentCredential(activeSession.studentId);
+      const profile = getLocalUserProfile() || await lookupUserByStudentIdOrEmail(activeSession.studentId) || await lookupUserByStudentIdOrEmail(activeSession.docId);
       const synthUser = {
-        uid: (profile && profile.uid) || activeSession.studentId,
+        uid: (profile && profile.uid) || activeSession.docId || activeSession.studentId,
         displayName: (profile && profile.name) || activeSession.name,
         email: (profile && profile.email) || activeSession.email,
         studentId: activeSession.studentId
