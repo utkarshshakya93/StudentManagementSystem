@@ -1,2 +1,2 @@
 # StudentManagementSystem
-A Java-based Student Management System for managing student records with CRUD and search functionality.
+A Frontend Function UI BAsed Student Management System using indexDB for managing student records with CRUD and search functionality.
