@@ -18,28 +18,31 @@ import { secureSaltPassword } from './crypto.js';
 
 // Pre-configured official student record for 145493 with salted password (Vishal90)
 const SEED_STUDENT_145493 = {
+  docId: "CvxwfGsZG9cjggBEk6c7Rx120x12",
+  uid: "CvxwfGsZG9cjggBEk6c7Rx120x12",
   studentId: "145493",
   name: "Utkarsh Shakya",
   fatherName: "Brajesh Kumar",
-  dob: "2007-12-09",
+  dob: "2007-07-12",
   gender: "Male",
   contact: "8299254889",
   section: "A",
   email: "utkarshshakya61@gmail.com",
+  alternateEmail: "utkarshshakya125@gmail.com",
   college: "DPG College",
   course: "BCA-5A",
-  semester: "Semester 6",
+  semester: "Semester 5",
   address: "kampil(farrukhabad)",
-  faqQuestion: "What was the name of your secondary high school?",
-  faqAnswer: "st mary",
+  faqQuestion: "What was the name of your childhood mentor or favorite teacher?",
+  faqAnswer: "vishal",
   status: "Active",
   profileCompleted: true,
   authProvider: "password",
   // Salted cryptographic hash & AES-GCM cipher for password 'Vishal90'
-  salt: "7ccaa7c279573f7c3fce1066f26c6306",
-  passwordHash: "71a4a31d67df3edb3ba6617bf064c606a94a3987e4fb7253549b0ba25b43d973",
-  passwordCipher: "8d3527e554c7e746b9a6bd3acb686352c1d455984053a4b6",
-  iv: "26cf80bc8abbd5920bc00bb8"
+  salt: "03947afb6589e1302a4a7e607fa43d68",
+  passwordHash: "9b5f807e23f67bdca342b7ebcc2faea87f619db93acbf90fb76d4edc039ac5f1",
+  passwordCipher: "61566d465e9d73b814a5e3073edde565b30aeca573b03c61",
+  iv: "5ce61c7877f1f635962ea131"
 };
 
 const STORAGE_KEYS = {
@@ -115,7 +118,28 @@ export async function fetchAllUsers() {
  * Plain password is NEVER saved to Firestore; only salt, hash, and cipher.
  */
 export async function saveUserRecord(docId, userData) {
-  const targetDocId = (docId || userData.uid || userData.studentId || "user_" + Date.now()).trim();
+  const users = getLocalUsers();
+  const cleanEmail = (userData.email || '').trim().toLowerCase();
+  const cleanStudentId = (userData.studentId || '').trim();
+
+  // Find existing record by docId, uid, studentId, email, or alternateEmail
+  const existingIdx = users.findIndex(u => 
+    (docId && (u.docId === docId || u.uid === docId)) ||
+    (userData.uid && (u.uid === userData.uid || u.docId === userData.uid)) ||
+    (cleanStudentId && u.studentId && u.studentId.trim() === cleanStudentId) ||
+    (cleanEmail && u.email && u.email.trim().toLowerCase() === cleanEmail) ||
+    (cleanEmail && u.alternateEmail && u.alternateEmail.trim().toLowerCase() === cleanEmail)
+  );
+
+  let targetDocId = docId;
+  // If an existing record already has a distinct UID/docId, preserve that document ID to prevent duplicate docs!
+  if (existingIdx >= 0 && users[existingIdx].docId) {
+    targetDocId = users[existingIdx].docId;
+  }
+  if (!targetDocId) {
+    targetDocId = userData.uid || userData.docId || userData.studentId || ("user_" + Date.now());
+  }
+  targetDocId = targetDocId.trim();
 
   // Clean data: Remove any plain text password from being stored in Firestore
   const cleanData = { ...userData };
@@ -126,8 +150,6 @@ export async function saveUserRecord(docId, userData) {
   cleanData.uid = cleanData.uid || targetDocId;
 
   // 1. Update local cache
-  const users = getLocalUsers();
-  const existingIdx = users.findIndex(u => (u.docId === targetDocId) || (u.studentId && u.studentId === cleanData.studentId));
   if (existingIdx >= 0) {
     users[existingIdx] = { ...users[existingIdx], ...cleanData };
   } else {
@@ -137,7 +159,7 @@ export async function saveUserRecord(docId, userData) {
 
   // Update current user profile if it matches
   const current = getLocalUserProfile();
-  if (current && (current.docId === targetDocId || current.studentId === cleanData.studentId)) {
+  if (current && (current.docId === targetDocId || current.studentId === cleanData.studentId || current.uid === targetDocId)) {
     saveLocalUserProfile({ ...current, ...cleanData });
   }
 
@@ -158,14 +180,17 @@ export async function saveUserRecord(docId, userData) {
 /**
  * Delete a user document from Firestore 'users' collection
  */
-export async function deleteUserRecord(docId) {
-  const cleanId = (docId || '').trim();
+export async function deleteUserRecord(identifier) {
+  const cleanId = (identifier || '').trim();
   const users = getLocalUsers();
-  const filtered = users.filter(u => u.docId !== cleanId && u.studentId !== cleanId);
+  const match = users.find(u => u.docId === cleanId || u.uid === cleanId || u.studentId === cleanId);
+  const targetDocId = (match && match.docId) || cleanId;
+
+  const filtered = users.filter(u => u.docId !== targetDocId && u.studentId !== cleanId);
   saveLocalUsers(filtered);
 
   try {
-    const docRef = doc(db, "users", cleanId);
+    const docRef = doc(db, "users", targetDocId);
     await deleteDoc(docRef);
   } catch (error) {
     console.warn("Firestore delete user warning:", error.message);
@@ -184,9 +209,11 @@ export async function lookupUserByStudentIdOrEmail(identifier) {
   // 1. Check local cache
   const localList = getLocalUsers();
   const localMatch = localList.find(u => 
-    (u.studentId && u.studentId.toLowerCase() === clean) ||
-    (u.email && u.email.toLowerCase() === clean) ||
-    (u.docId && u.docId.toLowerCase() === clean)
+    (u.studentId && u.studentId.trim().toLowerCase() === clean) ||
+    (u.email && u.email.trim().toLowerCase() === clean) ||
+    (u.alternateEmail && u.alternateEmail.trim().toLowerCase() === clean) ||
+    (u.docId && u.docId.trim().toLowerCase() === clean) ||
+    (u.uid && u.uid.trim().toLowerCase() === clean)
   );
   if (localMatch) {
     return localMatch;
@@ -221,6 +248,16 @@ export async function lookupUserByStudentIdOrEmail(identifier) {
     }
   } catch (e) {}
 
+  // 5. Query Firestore 'users' where alternateEmail == identifier
+  try {
+    const colRef = collection(db, "users");
+    const q3 = query(colRef, where("alternateEmail", "==", identifier.trim().toLowerCase()));
+    const snap3 = await getDocs(q3);
+    if (!snap3.empty) {
+      return { docId: snap3.docs[0].id, ...snap3.docs[0].data() };
+    }
+  } catch (e) {}
+
   return null;
 }
 
@@ -232,9 +269,11 @@ export async function updateUserSaltedPassword(docId, newPassword) {
 
   const cryptoData = await secureSaltPassword(newPassword);
 
-  // Update in local cache
   const users = getLocalUsers();
-  const match = users.find(u => u.docId === docId || u.studentId === docId);
+  const match = users.find(u => u.docId === docId || u.studentId === docId || (u.uid && u.uid === docId));
+  const targetDocId = (match && match.docId) || docId;
+
+  // Update in local cache
   if (match) {
     match.salt = cryptoData.salt;
     match.passwordHash = cryptoData.passwordHash;
@@ -245,7 +284,7 @@ export async function updateUserSaltedPassword(docId, newPassword) {
   }
 
   const current = getLocalUserProfile();
-  if (current && (current.docId === docId || current.studentId === docId)) {
+  if (current && (current.docId === targetDocId || current.studentId === targetDocId || current.docId === docId)) {
     current.salt = cryptoData.salt;
     current.passwordHash = cryptoData.passwordHash;
     current.passwordCipher = cryptoData.passwordCipher;
@@ -254,9 +293,9 @@ export async function updateUserSaltedPassword(docId, newPassword) {
     saveLocalUserProfile(current);
   }
 
-  // Update in Firestore 'users' collection
+  // Update in Firestore 'users' collection (merging with single target document)
   try {
-    const docRef = doc(db, "users", docId);
+    const docRef = doc(db, "users", targetDocId);
     await setDoc(docRef, {
       salt: cryptoData.salt,
       passwordHash: cryptoData.passwordHash,

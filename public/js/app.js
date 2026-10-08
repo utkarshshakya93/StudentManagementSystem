@@ -27,6 +27,7 @@ import {
   saveLocalUserProfile,
   updateUserSaltedPassword
 } from './db.js';
+import { auth, updatePassword } from './firebase-init.js';
 import { 
   appState, 
   showToast, 
@@ -556,7 +557,10 @@ function setupProfileTabHandlers() {
         showToast("Student ID and Student Name are required.", "warning");
         return;
       }
-      await saveUserRecord(studentData.studentId, studentData);
+      const users = getLocalUsers();
+      const match = users.find(u => u.studentId === studentData.studentId || (studentData.email && u.email && u.email.toLowerCase() === studentData.email.toLowerCase()));
+      const targetDocId = (match && match.docId) || (appState.currentUser && appState.currentUser.uid) || studentData.studentId;
+      await saveUserRecord(targetDocId, studentData);
       renderMyProfileTab();
       showToast(`Student ${studentData.name} (ID: ${studentData.studentId}) saved in users registry.`, "success");
     });
@@ -571,7 +575,10 @@ function setupProfileTabHandlers() {
         showToast("Please enter or select a Student ID to update.", "warning");
         return;
       }
-      await saveUserRecord(studentData.studentId, studentData);
+      const users = getLocalUsers();
+      const match = users.find(u => u.studentId === studentData.studentId || (studentData.email && u.email && u.email.toLowerCase() === studentData.email.toLowerCase()));
+      const targetDocId = (match && match.docId) || (appState.currentUser && appState.currentUser.uid) || studentData.studentId;
+      await saveUserRecord(targetDocId, studentData);
       renderMyProfileTab();
       showToast(`Record for ${studentData.name} updated.`, "success");
     });
@@ -706,9 +713,16 @@ function setupAccountSettingHandlers() {
       const saved = await saveUserRecord(docId, updatedProfile);
       appState.userProfile = saved;
 
-      // If new password provided, hash with salt and update
+      // If new password provided, hash with salt and update in Firestore and Firebase Auth
       if (newPass) {
         await updateUserSaltedPassword(docId, newPass);
+        if (auth.currentUser) {
+          try {
+            await updatePassword(auth.currentUser, newPass);
+          } catch(e) {
+            console.warn("Auth password update notice:", e.message);
+          }
+        }
         showToast("Password updated and encrypted with salt in Firestore!", "info");
       }
 
