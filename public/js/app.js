@@ -6,10 +6,12 @@ import {
   sendPhoneVerificationCode, 
   confirmPhoneVerificationCode, 
   resetPasswordViaEmail, 
-  verifyStudentFaq, 
+  resetPasswordViaStudentFaq,
   logoutStudent, 
   subscribeToAuthState, 
-  isProfileComplete 
+  isProfileComplete,
+  getAuthSessionDisplayInfo,
+  validateAndUpdateAuthSession
 } from './auth.js';
 import { 
   fetchAllStudents, 
@@ -80,16 +82,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   await fetchAllStudents();
   await fetchAllTasks();
 
+  // Check active session validity on load
+  const sessionInfo = validateAndUpdateAuthSession();
+
   // Listen to Auth State
   subscribeToAuthState(async (user, profile) => {
     appState.currentUser = user;
     appState.userProfile = profile;
 
-    if (user) {
+    if (user && profile) {
       // User is authenticated
       const complete = isProfileComplete(profile);
 
-      // Update User summary pill in Header & Sidebar
+      // Update User summary pill & session badge in Header & Sidebar
       updateUserInterfaceSummary(user, profile);
 
       // Check URL parameters for tab
@@ -98,8 +103,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       setView('dashboard');
 
-      // Requirement: Sign Up with Google requires redirect to dashboard?tab=accountsetting and disable all tabs until completion
-      if (!complete) {
+      // Requirement:
+      // "Auto Complete Profile on Sign Up , when User fill the form . Tabs Unlock only for Sign In with Google and other Methods except Sign In with Email and Password."
+      if (!complete && profile.authProvider !== 'password') {
         showToast("Welcome! Please complete your academic profile to unlock all student services.", "warning", 6000);
         switchTab('accountsetting');
       } else {
@@ -110,7 +116,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Unauthenticated
       const hash = window.location.hash;
       if (hash === '#dashboard') {
-        // Redirect back to home
         window.location.hash = '';
       }
       setView('home');
@@ -121,12 +126,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
 });
 
-// Update profile info across header & sidebar
+// Update profile info & auth session badge across header & sidebar
 function updateUserInterfaceSummary(user, profile) {
-  const displayName = (profile && profile.name) || user.displayName || 'Utkarsh Shakya';
+  const displayName = (profile && profile.name) || (user && user.displayName) || 'Utkarsh Shakya';
   const studentId = (profile && profile.studentId) || '145493';
   const course = (profile && profile.course) || 'B.Tech CSE';
-  const email = (profile && profile.email) || user.email || '';
 
   const elHeaderName = document.getElementById('header-user-name');
   const elHeaderId = document.getElementById('header-user-id');
@@ -139,6 +143,26 @@ function updateUserInterfaceSummary(user, profile) {
   if (elSidebarName) elSidebarName.textContent = displayName;
   if (elSidebarId) elSidebarId.textContent = studentId;
   if (elSidebarCourse) elSidebarCourse.textContent = course;
+
+  // Update session display badge
+  const sessionData = getAuthSessionDisplayInfo();
+  const sessionBadge = document.getElementById('sidebar-session-badge');
+  const sessionDesc = document.getElementById('sidebar-session-desc');
+
+  if (sessionData && sessionBadge) {
+    if (sessionData.hasGap) {
+      sessionBadge.className = 'px-1.5 py-0.5 rounded bg-amber-950 text-amber-400 font-mono text-3xs font-semibold';
+      sessionBadge.textContent = '3-DAY GAP';
+    } else {
+      sessionBadge.className = 'px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 font-mono text-3xs font-semibold';
+      sessionBadge.textContent = '7-DAY ACTIVE';
+    }
+  }
+  if (sessionData && sessionDesc) {
+    sessionDesc.textContent = sessionData.hasGap
+      ? `Gap detected • Valid until ${sessionData.expiresAtFormatted}`
+      : `Active daily • Valid until ${sessionData.expiresAtFormatted}`;
+  }
 }
 
 // 3. EVENT LISTENERS
@@ -265,9 +289,21 @@ async function handleSignInEmail(e) {
   try {
     submitBtn.disabled = true;
     submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i>Verifying Credentials...';
-    await loginWithEmailOrStudentId(identifier, password);
+
+    const { user, profile } = await loginWithEmailOrStudentId(identifier, password);
     closeModal('modal-signin');
-    showToast("Authentication successful! Welcome to Student Portal.", "success");
+
+    appState.currentUser = user;
+    appState.userProfile = profile;
+
+    updateUserInterfaceSummary(user, profile);
+    setView('dashboard');
+
+    // Email & Password login has tabs unlocked
+    updateSidebarLockStatus();
+    switchTab('myprofile');
+
+    showToast(`Authentication successful! Welcome ${profile.name || 'Student'}.`, "success");
   } catch (err) {
     showToast(err.message || "Failed to sign in. Please verify credentials.", "error");
   } finally {
@@ -283,9 +319,20 @@ async function handleGoogleAuth() {
     closeModal('modal-signup');
     showToast("Google Authentication successful!", "success");
 
-    // Profile check
+    appState.currentUser = user;
+    appState.userProfile = profile;
+    updateUserInterfaceSummary(user, profile);
+    setView('dashboard');
+
+    // Requirement:
+    // "Tabs Unlock only for Sign In with Google and other Methods except Sign In with Email and Password."
     if (!isProfileComplete(profile)) {
+      updateSidebarLockStatus();
       switchTab('accountsetting');
+      showToast("Please complete your institutional credentials in Account Settings to unlock all tabs.", "warning", 6000);
+    } else {
+      updateSidebarLockStatus();
+      switchTab('myprofile');
     }
   } catch (err) {
     showToast("Google Authentication error: " + err.message, "error");
@@ -322,7 +369,8 @@ async function handleSignUpForm(e) {
     submitBtn.disabled = true;
     submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i>Enrolling Student...';
 
-    await registerStudentWithEmailPassword({
+    // Auto Complete Profile on Sign Up with password stored in Firestore
+    const { user, profile } = await registerStudentWithEmailPassword({
       studentId,
       name,
       college,
@@ -336,7 +384,18 @@ async function handleSignUpForm(e) {
     });
 
     closeModal('modal-signup');
-    showToast("Student Enrollment completed! Welcome to your Academic Portal.", "success");
+
+    appState.currentUser = user;
+    appState.userProfile = profile;
+
+    updateUserInterfaceSummary(user, profile);
+    setView('dashboard');
+
+    // Auto completed profile on sign up: All tabs unlocked immediately!
+    updateSidebarLockStatus();
+    switchTab('myprofile');
+
+    showToast("Student Enrollment completed! Profile auto-completed and all tabs unlocked.", "success");
   } catch (err) {
     showToast("Registration failed: " + err.message, "error");
   } finally {
@@ -378,9 +437,23 @@ async function handleVerifyPhoneOtp() {
   try {
     btn.disabled = true;
     btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i>Verifying...';
-    await confirmPhoneVerificationCode(otp);
+    const { user, profile } = await confirmPhoneVerificationCode(otp);
     closeModal('modal-signin');
-    showToast("Phone verification successful!", "success");
+
+    appState.currentUser = user;
+    appState.userProfile = profile;
+    updateUserInterfaceSummary(user, profile);
+    setView('dashboard');
+
+    if (!isProfileComplete(profile)) {
+      updateSidebarLockStatus();
+      switchTab('accountsetting');
+      showToast("Phone verified! Please complete your academic details in Account Settings to unlock tabs.", "warning", 6000);
+    } else {
+      updateSidebarLockStatus();
+      switchTab('myprofile');
+      showToast("Phone verification successful! Welcome to Student Portal.", "success");
+    }
   } catch (err) {
     showToast("Invalid verification code: " + err.message, "error");
   } finally {
@@ -401,16 +474,43 @@ async function handleForgotEmail(e) {
   }
 }
 
+// Reset password via Student ID + Security FAQ Answer + Direct Password Update
 async function handleForgotFaq(e) {
   e.preventDefault();
-  const studentId = document.getElementById('forgot-faq-id').value;
-  const answer = document.getElementById('forgot-faq-answer').value;
+  const studentId = document.getElementById('forgot-faq-id').value.trim();
+  const answer = document.getElementById('forgot-faq-answer').value.trim();
+  const newPass = document.getElementById('forgot-new-password').value;
+  const confirmPass = document.getElementById('forgot-confirm-password').value;
+
+  if (newPass !== confirmPass) {
+    showToast("New password confirmation does not match.", "warning");
+    return;
+  }
+
+  if (newPass.length < 6) {
+    showToast("New password must be at least 6 characters long.", "warning");
+    return;
+  }
+
+  const submitBtn = e.target.querySelector('button[type="submit"]');
+
   try {
-    const email = await verifyStudentFaq(studentId, answer);
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i>Updating Password...';
+
+    await resetPasswordViaStudentFaq(studentId, answer, newPass);
     closeModal('modal-forgot');
-    showToast(`Security verified! Password reset instructions sent to ${email}`, "success");
+
+    // Pre-fill student ID in sign in modal
+    document.getElementById('signin-identifier').value = studentId;
+    openModal('modal-signin');
+
+    showToast("Security verified and password saved in Firestore! You can now sign in.", "success", 5000);
   } catch (err) {
     showToast(err.message, "error");
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.innerHTML = 'Verify FAQ & Save New Password';
   }
 }
 
@@ -476,7 +576,7 @@ function setupProfileTabHandlers() {
     });
   }
 
-  // Delete Record by ID (from image reference: Delete [145493] <- Enter ID to delete)
+  // Delete Record by ID
   const btnDeleteById = document.getElementById('btn-delete-by-id');
   if (btnDeleteById) {
     btnDeleteById.addEventListener('click', async () => {
@@ -498,7 +598,7 @@ function setupProfileTabHandlers() {
     }
   };
 
-  // Search by Name (from image reference: Search [ ] <- Enter Name to Search)
+  // Search by Name
   const btnSearchName = document.getElementById('btn-search-name');
   const inputSearchName = document.getElementById('input-search-name');
   if (btnSearchName && inputSearchName) {
@@ -535,8 +635,12 @@ function setupProfileTabHandlers() {
 }
 
 function getFormDataFromProfile() {
+  const currentStudents = getLocalStudents();
+  const enteredId = document.getElementById('prof-student-id').value.trim();
+  const existing = currentStudents.find(s => s.studentId === enteredId);
+
   return {
-    studentId: document.getElementById('prof-student-id').value.trim(),
+    studentId: enteredId,
     name: document.getElementById('prof-student-name').value.trim(),
     fatherName: document.getElementById('prof-father-name').value.trim(),
     dob: document.getElementById('prof-dob').value,
@@ -545,10 +649,12 @@ function getFormDataFromProfile() {
     email: document.getElementById('prof-email').value.trim(),
     section: document.getElementById('prof-section').value,
     address: document.getElementById('prof-address').value.trim(),
-    college: "Institute of Engineering & Technology",
-    course: "B.Tech Computer Science & Engineering",
-    semester: "Semester 6",
-    status: "Active"
+    password: (existing && existing.password) || (enteredId === '145493' ? 'Vishal90' : 'Password123'),
+    college: (existing && existing.college) || "Institute of Engineering & Technology",
+    course: (existing && existing.course) || "B.Tech Computer Science & Engineering",
+    semester: (existing && existing.semester) || "Semester 6",
+    status: "Active",
+    profileCompleted: true
   };
 }
 
@@ -559,6 +665,16 @@ function setupAccountSettingHandlers() {
   if (formAccount) {
     formAccount.addEventListener('submit', async (e) => {
       e.preventDefault();
+
+      const newPass = document.getElementById('acc-password')?.value || '';
+      const confirmPass = document.getElementById('acc-confirm-password')?.value || '';
+
+      if (newPass && newPass !== confirmPass) {
+        showToast("Password confirmation does not match.", "warning");
+        return;
+      }
+
+      const existingProfile = appState.userProfile || {};
       const updatedProfile = {
         studentId: document.getElementById('acc-student-id').value.trim(),
         name: document.getElementById('acc-name').value.trim(),
@@ -574,17 +690,19 @@ function setupAccountSettingHandlers() {
         dob: document.getElementById('acc-dob').value,
         gender: document.getElementById('acc-gender').value,
         address: document.getElementById('acc-address').value.trim(),
+        password: newPass || existingProfile.password || (document.getElementById('acc-student-id').value.trim() === '145493' ? 'Vishal90' : 'Password123'),
         profileCompleted: true
       };
 
-      const uid = appState.currentUser ? appState.currentUser.uid : 'guest-student';
+      const uid = (appState.currentUser && appState.currentUser.uid) || updatedProfile.studentId;
       const saved = await saveUserProfile(uid, updatedProfile);
       appState.userProfile = saved;
 
+      // Unlock tabs
       updateSidebarLockStatus();
       updateUserInterfaceSummary(appState.currentUser || {}, saved);
       renderAccountSettingTab();
-      showToast("Profile credentials updated successfully! All portal tabs unlocked.", "success");
+      showToast("Profile credentials & password saved in Firestore! All portal tabs unlocked.", "success");
     });
   }
 }
@@ -625,7 +743,6 @@ function setupDailyDiaryHandlers() {
 
       await addDailyTaskRecord(newTask);
       formDiary.reset();
-      // Re-populate live date
       document.getElementById('diary-task-date').value = now.toISOString().split('T')[0];
       renderDailyDiaryTab();
       showToast("Daily academic task logged successfully!", "success");

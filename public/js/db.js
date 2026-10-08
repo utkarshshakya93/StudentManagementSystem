@@ -8,25 +8,32 @@ import {
   deleteDoc, 
   collection, 
   getDocs, 
+  query,
+  where,
   serverTimestamp 
 } from './firebase-init.js';
 
 // Initial verified registry records from the reference design
+// With student 145493 configured with password "Vishal90" as requested
 const INITIAL_STUDENTS = [
   {
     studentId: "145493",
     name: "Utkarsh Shakya",
     fatherName: "Brajesh Kumar",
-    dob: "2004-07-10",
+    dob: "2007-12-09",
     gender: "Male",
-    contact: "9876543210",
+    contact: "8299254889",
     section: "A",
     email: "utkarshshakya61@gmail.com",
-    address: "Kampil (Farrukhabad), UP",
-    college: "Institute of Engineering & Technology",
-    course: "B.Tech Computer Science & Engineering",
+    password: "Vishal90",
+    address: "kampil(farrukhabad)",
+    college: "DPG College",
+    course: "BCA-5A",
     semester: "Semester 6",
-    status: "Active"
+    status: "Active",
+    profileCompleted: true,
+    faqQuestion: "What was the name of your secondary high school?",
+    faqAnswer: "St Mary"
   },
   {
     studentId: "145492",
@@ -37,11 +44,15 @@ const INITIAL_STUDENTS = [
     contact: "9123456789",
     section: "B",
     email: "rohit@gmail.com",
+    password: "Password123",
     address: "Meerut, UP",
     college: "Institute of Engineering & Technology",
     course: "B.Tech Information Technology",
     semester: "Semester 6",
-    status: "Active"
+    status: "Active",
+    profileCompleted: true,
+    faqQuestion: "What was your first major academic subject?",
+    faqAnswer: "Computer Science"
   },
   {
     studentId: "145491",
@@ -52,11 +63,15 @@ const INITIAL_STUDENTS = [
     contact: "8765432109",
     section: "A",
     email: "neha@gmail.com",
+    password: "Password123",
     address: "Delhi",
     college: "Institute of Engineering & Technology",
     course: "B.Tech Computer Science & Engineering",
     semester: "Semester 6",
-    status: "Active"
+    status: "Active",
+    profileCompleted: true,
+    faqQuestion: "What was the name of your secondary high school?",
+    faqAnswer: "Delhi Public School"
   }
 ];
 
@@ -128,7 +143,8 @@ const INITIAL_TASKS = [
 const STORAGE_KEYS = {
   STUDENTS: "sms_academic_students",
   USER_PROFILE: "sms_current_user_profile",
-  TASKS: "sms_daily_tasks"
+  TASKS: "sms_daily_tasks",
+  AUTH_SESSION: "sms_auth_session"
 };
 
 // ---------------- STUDENT DIRECTORY OPERATIONS ---------------- //
@@ -140,7 +156,14 @@ export function getLocalStudents() {
     return [...INITIAL_STUDENTS];
   }
   try {
-    return JSON.parse(data);
+    const list = JSON.parse(data);
+    // Ensure 145493 has Vishal90 in local cache
+    const s145493 = list.find(s => s.studentId === "145493");
+    if (s145493 && !s145493.password) {
+      s145493.password = "Vishal90";
+      localStorage.setItem(STORAGE_KEYS.STUDENTS, JSON.stringify(list));
+    }
+    return list;
   } catch (e) {
     return [...INITIAL_STUDENTS];
   }
@@ -156,12 +179,26 @@ export async function fetchAllStudents() {
     const snapshot = await getDocs(colRef);
     if (!snapshot.empty) {
       const remoteStudents = [];
-      snapshot.forEach(doc => {
-        remoteStudents.push(doc.data());
+      snapshot.forEach(docSnap => {
+        remoteStudents.push(docSnap.data());
       });
-      // Merge with initial if needed
+
+      // Check if 145493 is in remote students and has password
+      const s145493 = remoteStudents.find(s => s.studentId === "145493");
+      if (!s145493 || !s145493.password) {
+        // Sync 145493 with Vishal90
+        await saveStudentRecord(INITIAL_STUDENTS[0]);
+        if (!s145493) remoteStudents.unshift(INITIAL_STUDENTS[0]);
+        else s145493.password = "Vishal90";
+      }
+
       saveLocalStudents(remoteStudents);
       return remoteStudents;
+    } else {
+      // Empty remote, seed initial students
+      for (const s of INITIAL_STUDENTS) {
+        await saveStudentRecord(s);
+      }
     }
   } catch (error) {
     console.warn("Firestore fetch students error (using local cache):", error.message);
@@ -173,22 +210,38 @@ export async function saveStudentRecord(student) {
   const currentStudents = getLocalStudents();
   const existingIndex = currentStudents.findIndex(s => s.studentId === student.studentId);
   
+  let mergedStudent = { ...student };
   if (existingIndex >= 0) {
-    currentStudents[existingIndex] = { ...currentStudents[existingIndex], ...student };
+    // Preserve existing password if not provided
+    if (!mergedStudent.password && currentStudents[existingIndex].password) {
+      mergedStudent.password = currentStudents[existingIndex].password;
+    }
+    currentStudents[existingIndex] = { ...currentStudents[existingIndex], ...mergedStudent };
   } else {
-    currentStudents.unshift(student);
+    currentStudents.unshift(mergedStudent);
   }
   saveLocalStudents(currentStudents);
 
-  // Sync to Firestore
+  // Sync to Firestore students collection
   try {
     const studentDocRef = doc(db, "students", student.studentId);
     await setDoc(studentDocRef, {
-      ...student,
+      ...mergedStudent,
       updatedAt: serverTimestamp()
     }, { merge: true });
   } catch (error) {
     console.warn("Firestore save student warning:", error.message);
+  }
+
+  // Also sync to Firestore users collection so credential lookup finds it
+  try {
+    const userDocRef = doc(db, "users", student.studentId);
+    await setDoc(userDocRef, {
+      ...mergedStudent,
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+  } catch (error) {
+    console.warn("Firestore save user record warning:", error.message);
   }
 
   return currentStudents;
@@ -206,16 +259,25 @@ export async function deleteStudentRecord(studentId) {
     console.warn("Firestore delete student warning:", error.message);
   }
 
+  try {
+    const userDocRef = doc(db, "users", studentId);
+    await deleteDoc(userDocRef);
+  } catch (error) {}
+
   return filtered;
 }
 
-// ---------------- USER PROFILE OPERATIONS ---------------- //
+// ---------------- USER CREDENTIAL & PROFILE OPERATIONS ---------------- //
 
 export function getLocalUserProfile() {
   const data = localStorage.getItem(STORAGE_KEYS.USER_PROFILE);
   if (data) {
     try {
-      return JSON.parse(data);
+      const parsed = JSON.parse(data);
+      if (parsed.studentId === "145493" && !parsed.password) {
+        parsed.password = "Vishal90";
+      }
+      return parsed;
     } catch (e) {
       return null;
     }
@@ -225,6 +287,72 @@ export function getLocalUserProfile() {
 
 export function saveLocalUserProfile(profile) {
   localStorage.setItem(STORAGE_KEYS.USER_PROFILE, JSON.stringify(profile));
+}
+
+// Lookup student credential in Firestore & Local storage
+export async function lookupStudentCredential(identifier) {
+  const cleanId = (identifier || '').trim().toLowerCase();
+  if (!cleanId) return null;
+
+  // 1. Check local user profile
+  const localProf = getLocalUserProfile();
+  if (localProf) {
+    const matchId = (localProf.studentId || '').toLowerCase() === cleanId;
+    const matchEmail = (localProf.email || '').toLowerCase() === cleanId;
+    if (matchId || matchEmail) {
+      return localProf;
+    }
+  }
+
+  // 2. Check local students directory
+  const localStudents = getLocalStudents();
+  const matchLocal = localStudents.find(s => 
+    (s.studentId && s.studentId.toLowerCase() === cleanId) || 
+    (s.email && s.email.toLowerCase() === cleanId)
+  );
+  if (matchLocal) {
+    return matchLocal;
+  }
+
+  // 3. Query Firestore 'users' collection by ID
+  try {
+    const docRef = doc(db, "users", identifier.trim());
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      return snap.data();
+    }
+  } catch (e) {}
+
+  // 4. Query Firestore 'students' collection by ID
+  try {
+    const docRef = doc(db, "students", identifier.trim());
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      return snap.data();
+    }
+  } catch (e) {}
+
+  // 5. Query Firestore 'users' by email
+  try {
+    const colRef = collection(db, "users");
+    const q = query(colRef, where("email", "==", identifier.trim().toLowerCase()));
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      return snap.docs[0].data();
+    }
+  } catch (e) {}
+
+  // 6. Query Firestore 'students' by email
+  try {
+    const colRef = collection(db, "students");
+    const q = query(colRef, where("email", "==", identifier.trim().toLowerCase()));
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      return snap.docs[0].data();
+    }
+  } catch (e) {}
+
+  return null;
 }
 
 export async function fetchUserProfile(uid) {
@@ -244,41 +372,92 @@ export async function fetchUserProfile(uid) {
   return getLocalUserProfile();
 }
 
+// Save User Profile including Password to Firestore and Local Storage
 export async function saveUserProfile(uid, profileData) {
   const existing = getLocalUserProfile() || {};
-  const merged = { ...existing, ...profileData, uid };
+  const merged = { ...existing, ...profileData };
+  if (uid) merged.uid = uid;
   saveLocalUserProfile(merged);
 
-  // Also add or update the student registry with this profile if studentId is present
+  // Update in local students directory
   if (merged.studentId) {
-    await saveStudentRecord({
-      studentId: merged.studentId,
-      name: merged.name || merged.displayName || "Student",
-      fatherName: merged.fatherName || "—",
-      dob: merged.dob || "",
-      gender: merged.gender || "Not Specified",
-      contact: merged.contact || merged.phone || "",
-      section: merged.section || "A",
-      email: merged.email || "",
-      address: merged.address || "",
-      college: merged.college || "Academic Institute",
-      course: merged.course || "Degree Course",
-      semester: merged.semester || "Semester 1",
-      status: "Active"
-    });
+    const students = getLocalStudents();
+    const idx = students.findIndex(s => s.studentId === merged.studentId);
+    if (idx >= 0) {
+      students[idx] = { ...students[idx], ...merged };
+    } else {
+      students.unshift(merged);
+    }
+    saveLocalStudents(students);
   }
 
+  // Sync to Firestore 'users' by uid and by studentId
   try {
-    const userDocRef = doc(db, "users", uid);
-    await setDoc(userDocRef, {
-      ...merged,
-      updatedAt: serverTimestamp()
-    }, { merge: true });
+    if (uid) {
+      const userDocRef = doc(db, "users", uid);
+      await setDoc(userDocRef, {
+        ...merged,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+    }
+    if (merged.studentId && merged.studentId !== uid) {
+      const studentUserDocRef = doc(db, "users", merged.studentId);
+      await setDoc(studentUserDocRef, {
+        ...merged,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+    }
   } catch (error) {
-    console.warn("Firestore saveUserProfile warning:", error.message);
+    console.warn("Firestore saveUserProfile users warning:", error.message);
+  }
+
+  // Also sync to Firestore 'students' collection
+  if (merged.studentId) {
+    try {
+      const studentDocRef = doc(db, "students", merged.studentId);
+      await setDoc(studentDocRef, {
+        ...merged,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+    } catch (error) {
+      console.warn("Firestore saveUserProfile students warning:", error.message);
+    }
   }
 
   return merged;
+}
+
+// Update password in Firestore (users & students collections) and local storage
+export async function updateStudentPassword(studentId, newPassword) {
+  if (!studentId || !newPassword) return false;
+
+  // 1. Update in local students
+  const students = getLocalStudents();
+  const match = students.find(s => s.studentId === studentId);
+  if (match) {
+    match.password = newPassword;
+    saveLocalStudents(students);
+  }
+
+  // 2. Update in local user profile
+  const localProf = getLocalUserProfile();
+  if (localProf && localProf.studentId === studentId) {
+    localProf.password = newPassword;
+    saveLocalUserProfile(localProf);
+  }
+
+  // 3. Update in Firestore
+  try {
+    const userDoc = doc(db, "users", studentId);
+    await setDoc(userDoc, { password: newPassword, updatedAt: serverTimestamp() }, { merge: true });
+  } catch (e) {}
+
+  try {
+    const studDoc = doc(db, "students", studentId);
+    await setDoc(studDoc, { password: newPassword, updatedAt: serverTimestamp() }, { merge: true });
+  } catch (e) {}
+
+  return true;
 }
 
 // ---------------- DAILY DIARY & TASK OPERATIONS ---------------- //
@@ -306,8 +485,8 @@ export async function fetchAllTasks() {
     const snapshot = await getDocs(colRef);
     if (!snapshot.empty) {
       const remoteTasks = [];
-      snapshot.forEach(doc => {
-        remoteTasks.push({ id: doc.id, ...doc.data() });
+      snapshot.forEach(docSnap => {
+        remoteTasks.push({ id: docSnap.id, ...docSnap.data() });
       });
       saveLocalTasks(remoteTasks);
       return remoteTasks;

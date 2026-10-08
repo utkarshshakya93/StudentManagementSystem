@@ -161,10 +161,13 @@ export function initSwipeGestures() {
 // ---------------- TAB NAVIGATION & LOCKING LOGIC ---------------- //
 
 export function switchTab(tabId) {
-  const profileComplete = isProfileComplete(appState.userProfile);
+  const profile = appState.userProfile;
+  const profileComplete = isProfileComplete(profile);
+  const isGoogleOrOther = profile && (profile.authProvider === 'google' || profile.authProvider === 'phone');
+  const isLocked = isGoogleOrOther && !profileComplete;
 
-  // Requirement: "disable all tabs until profile completion"
-  if (!profileComplete && tabId !== 'accountsetting') {
+  // Requirement: Tabs lock only for Google & other incomplete methods; unlocked for Email/Password
+  if (isLocked && tabId !== 'accountsetting') {
     showToast("Profile Incomplete: Please finish configuring your student credentials in Account Settings to unlock this tab.", "warning", 5000);
     tabId = 'accountsetting';
   }
@@ -219,11 +222,14 @@ export function switchTab(tabId) {
 }
 
 export function updateSidebarLockStatus() {
-  const profileComplete = isProfileComplete(appState.userProfile);
+  const profile = appState.userProfile;
+  const profileComplete = isProfileComplete(profile);
+  const isGoogleOrOther = profile && (profile.authProvider === 'google' || profile.authProvider === 'phone');
+  const isLocked = isGoogleOrOther && !profileComplete;
+
   const banner = document.getElementById('profile-locked-banner');
-  
   if (banner) {
-    if (!profileComplete) {
+    if (isLocked) {
       banner.classList.remove('hidden');
     } else {
       banner.classList.add('hidden');
@@ -235,7 +241,7 @@ export function updateSidebarLockStatus() {
     const btn = document.querySelector(`.sidebar-nav-btn[data-tab="${tabKey}"]`);
     if (btn) {
       const lockBadge = btn.querySelector('.tab-lock-icon');
-      if (!profileComplete) {
+      if (isLocked) {
         btn.classList.add('tab-locked');
         if (lockBadge) lockBadge.classList.remove('hidden');
       } else {
